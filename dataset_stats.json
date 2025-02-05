@@ -1,0 +1,41 @@
+{
+  "total_stories": 71,
+  "top_categories": {
+    "": 5,
+    "Naruto, Adventure, Romance": 3,
+    "Mass Effect, Romance, Sci-Fi": 2,
+    "Mario, Adventure, Fantasy": 2,
+    "Glee, Angst, Romance": 2,
+    "Naruto, Adventure": 2,
+    "High School DxD/ハイスクールD×D, Naruto, Humor, Romance": 1,
+    "D.Gray-Man, Harry Potter": 1,
+    "Naruto, Friendship, Humor": 1,
+    "How to Train Your Dragon, Adventure, Romance": 1,
+    "Dragon Ball Z": 1,
+    "World Only God Knows/神のみぞ知るセカイ, Friendship, Romance": 1,
+    "My So Called Life": 1,
+    "Winx Club, Drama, Romance": 1,
+    "Final Fantasy VII, Family, Humor": 1,
+    "Mass Effect, Drama, Sci-Fi": 1,
+    "Yu-Gi-Oh, Romance": 1,
+    "Harry Potter, Family, Romance": 1,
+    "Naruto, Sekirei": 1,
+    "Labyrinth, Adventure, Romance": 1
+  },
+  "sources": {
+    "Fanfiction": 71
+  },
+  "languages": {
+    "en": 71
+  },
+  "text_length_stats": {
+    "min": 1004538,
+    "max": 3313502,
+    "average": 1408175.38028169
+  },
+  "perplexity_score_stats": {
+    "min": 8522.7,
+    "max": 9997.0,
+    "average": 9606.354929577465
+  }
+}
