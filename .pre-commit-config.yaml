@@ -1,0 +1,47 @@
+repos:
+  - hooks:
+      - additional_dependencies:
+          - prettier@3.0.0
+          - prettier-plugin-go-template
+          - prettier-plugin-nginx
+          - prettier-plugin-sh
+          - prettier-plugin-toml
+        id: prettier
+        stages:
+          - pre-commit
+    repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.7.3
+    hooks:
+      # Run the linter.
+      - id: ruff
+        args: [--fix]
+      # Run the formatter.
+      - id: ruff-format
+  - hooks:
+      - id: requirements-txt-fixer
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-json
+      - id: check-toml
+      - args:
+          - --allow-multiple-documents
+        id: check-yaml
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+    repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+  - hooks:
+      - id: commitizen
+      - id: commitizen-branch
+        stages:
+          - pre-push
+    repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.29.0
