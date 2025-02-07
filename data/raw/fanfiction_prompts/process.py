@@ -35,6 +35,13 @@ def quality_filter(summary: str, min_length: int = 20, max_length: int = 500) ->
     Returns:
         bool: True if the summary passes quality checks
     """
+    # Skip None or empty summaries
+    if not summary:
+        return False
+
+    if not isinstance(summary, str):
+        return False
+
     if not min_length <= len(summary) <= max_length:
         return False
 
@@ -156,32 +163,23 @@ async def main():
     for cat, count in categories.most_common(10):
         logger.info(f"- {cat}: {count} entries")
 
-    # Convert to list for random sampling
-    all_items = [
-        {
-            "summary": item["summary"],
-            "category": item["category"],
-            "rating": item["rating"],
-        }
-        for item in ds["train"]
-    ]
+    # Convert to list and filter all entries first
+    logger.info("\nFiltering all entries...")
+    all_items = []
+    filter_stats = {"none": 0, "length": 0, "format": 0, "quality": 0, "passed": 0}
 
-    # Randomly sample entries (temporarily set to 100 for testing)
-    sample_size = min(100, len(all_items))
-    logger.info(
-        f"\nRandomly sampling {sample_size} entries from {len(all_items)} total entries..."
-    )
-    sampled_items = random.sample(all_items, sample_size)
+    for item in ds["train"]:
+        summary = item.get("summary")
 
-    # Filter items
-    logger.info("\nFiltering sampled entries...")
-    filtered_items = []
-    filter_stats = {"length": 0, "format": 0, "quality": 0, "passed": 0}
+        # Skip None summaries
+        if not summary:
+            filter_stats["none"] += 1
+            continue
 
-    for item in sampled_items:
-        summary = item["summary"]
         # Track why items are filtered
-        if len(summary) < 20 or len(summary) > 500:
+        if not isinstance(summary, str):
+            filter_stats["none"] += 1
+        elif len(summary) < 20 or len(summary) > 500:
             filter_stats["length"] += 1
         elif not summary[0].isupper() or not summary.rstrip("...").endswith(
             (".", "!", "?")
@@ -201,26 +199,39 @@ async def main():
         else:
             words = summary.split()
             if len(words) >= 5 and len(set(words)) >= 4:
-                filtered_items.append(item)
+                all_items.append(
+                    {
+                        "summary": summary,
+                        "category": item["category"],
+                        "rating": item["rating"],
+                    }
+                )
                 filter_stats["passed"] += 1
             else:
                 filter_stats["quality"] += 1
 
-    filtered_count = len(filtered_items)
     logger.info("\nFilter statistics:")
+    logger.info(f"- None or invalid summaries: {filter_stats['none']} items")
     logger.info(f"- Failed length check: {filter_stats['length']} items")
     logger.info(f"- Failed format check: {filter_stats['format']} items")
     logger.info(f"- Failed quality check: {filter_stats['quality']} items")
     logger.info(f"- Passed all checks: {filter_stats['passed']} items")
     logger.info(
-        f"\nFiltered {sample_size} -> {filtered_count} items ({filtered_count/sample_size*100:.1f}% pass rate)"
+        f"\nFiltered {len(ds['train'])} -> {len(all_items)} items ({len(all_items)/len(ds['train'])*100:.1f}% pass rate)"
     )
 
-    # Estimate total cost
-    estimated_cost = filtered_count * 0.0000219
-    logger.info(f"Estimated cost for {filtered_count} items: ${estimated_cost:.6f}")
+    # Sample from filtered items
+    sample_size = min(50000, len(all_items))
+    logger.info(
+        f"\nRandomly sampling {sample_size} entries from {len(all_items)} filtered entries..."
+    )
+    sampled_items = random.sample(all_items, sample_size)
 
-    proceed = input(f"\nProceed with processing {filtered_count} items (y/n)? ")
+    # Estimate total cost
+    estimated_cost = sample_size * 0.0000219
+    logger.info(f"Estimated cost for {sample_size} items: ${estimated_cost:.6f}")
+
+    proceed = input(f"\nProceed with processing {sample_size} items (y/n)? ")
     if proceed.lower() != "y":
         logger.info("Aborting...")
         return
@@ -235,25 +246,28 @@ async def main():
 
     try:
         # Process in smaller batches
-        for i in range(0, len(filtered_items), batch_size):
-            batch_items = filtered_items[i : i + batch_size]
+        for i in range(0, len(sampled_items), batch_size):
+            batch_items = sampled_items[i : i + batch_size]
             prompts = await process_batch(batch_items, stats)
             all_prompts.extend(prompts)
 
-            # Log progress
-            logger.info(
-                f"Processed {i+len(batch_items)}/{len(filtered_items)} items. "
-                f"Success: {stats['successful']}, Failed: {stats['failed']}, "
-                f"Cost: ${stats['cost']:.6f}"
-            )
-
-            # Save progress
-            if all_prompts:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                with open(
-                    f"data/raw/fanfiction_prompts/data/prompts_{timestamp}.json", "w"
-                ) as f:
-                    json.dump(all_prompts, f, indent=2)
+            # Log progress and save every 1000 items
+            if (i + len(batch_items)) % 1000 == 0 or i + len(batch_items) == len(
+                sampled_items
+            ):
+                logger.info(
+                    f"Processed {i+len(batch_items)}/{len(sampled_items)} items. "
+                    f"Success: {stats['successful']}, Failed: {stats['failed']}, "
+                    f"Cost: ${stats['cost']:.6f}"
+                )
+                # Save progress
+                if all_prompts:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    with open(
+                        f"data/raw/fanfiction_prompts/data/prompts_{timestamp}.json",
+                        "w",
+                    ) as f:
+                        json.dump(all_prompts, f, indent=2)
 
             # Rate limiting
             time.sleep(1)  # Basic rate limiting

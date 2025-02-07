@@ -1,6 +1,6 @@
 {
   "citation": "",
-  "description": "A combined dataset of writing prompts from multiple sources:\n- Reddit Writing Prompts: Creative writing prompts from r/WritingPrompts\n- Fanfiction Prompts: Writing prompts generated from fanfiction summaries using the Nova model",
+  "description": "",
   "features": {
     "prompt": {
       "dtype": "string",
@@ -12,5 +12,5 @@
     }
   },
   "homepage": "",
-  "license": "MIT"
+  "license": ""
 }
