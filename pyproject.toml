@@ -9,6 +9,7 @@ dependencies = [
     "dspy>=2.6.2",
     "huggingface-hub>=0.28.1",
     "litellm[proxy]==1.57.4",
+    "pydantic-settings>=2.7.1",
     "transformers[torch]>=4.48.2",
     "trl>=0.14.0",
     "unsloth>=2025.1.8",
