@@ -1,5 +1,7 @@
 # llm-creativity-learning
 
+Experiments I am running to see if reinforcement learning algorithms can improve the ability of LLMs in creative writing
+
 ## Citations
 
 - The antislop reward model is taken from [sam-paech/antislop-sampler](https://github.com/sam-paech/antislop-sampler)
