@@ -1,26 +1,35 @@
+import logging
 import random
 from typing import List, Callable
+
 import click
-from datasets import load_from_disk
 import dspy
+import psutil
 import wandb
+from datasets import load_from_disk
 from transformers import TrainerCallback
-from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
 from trl import GRPOConfig, GRPOTrainer
+from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
 
 from src.config import Settings
-from src.rewards.structure import (
-    strict_format_reward,
-    soft_format_reward,
-    xml_count_reward,
-)
 from src.rewards.antislop import antislop_penalty_reward
 from src.rewards.content import (
-    grammar_reward,
-    emotional_impact_reward,
-    originality_reward,
     coherence_reward,
+    emotional_impact_reward,
+    grammar_reward,
+    originality_reward,
 )
+from src.rewards.structure import (
+    soft_format_reward,
+    strict_format_reward,
+    xml_count_reward,
+)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # Patch GRPO before all functions
 PatchFastRL("GRPO", FastLanguageModel)
@@ -92,7 +101,7 @@ def prepare_dataset(dataset, settings: Settings):
             ]
         }
 
-    return dataset.map(add_prompts)
+    return dataset.map(add_prompts, cache_file_name=settings.dataset_cache_dir)
 
 
 REWARD_FUNCTIONS = {
@@ -136,42 +145,51 @@ def setup_model(settings: Settings):
         load_in_4bit=True,
         max_seq_length=settings.max_seq_length,
         # fast_inference=True,
-        gpu_memory_utilization=0.5,
+        gpu_memory_utilization=settings.gpu_memory_utilization,
     )
 
     model = FastLanguageModel.get_peft_model(
         model,
-        use_gradient_checkpointing="unsloth",
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],  # Remove QKVO if out of memory
+        use_gradient_checkpointing="unsloth"
+        if settings.gradient_checkpointing
+        else None,
+        target_modules=settings.peft_target_modules,
     )
 
     return model, tokenizer
 
 
-class WandbEvalCallback(TrainerCallback):
-    """Custom callback for logging evaluation samples to wandb."""
+class TrainingCallback(TrainerCallback):
+    """Custom callback for logging training metrics and samples."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.step = 0
+        self.start_time = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Initialize training monitoring."""
+        self.start_time = wandb.util.time.time()
+        if self.settings.wandb_enabled:
+            if self.settings.wandb_watch != "false":
+                wandb.watch(
+                    kwargs["model"],
+                    log=self.settings.wandb_watch,
+                    log_freq=100,
+                )
 
     def on_step_end(self, args, state, control, **kwargs):
-        """Log evaluation samples to wandb at specified frequency."""
+        """Log training metrics, samples, and resource usage."""
         self.step += 1
+
+        if not self.settings.wandb_enabled:
+            return
+
+        # Log evaluation samples
         if (
-            self.settings.wandb_enabled
-            and self.settings.wandb_log_eval_samples
+            self.settings.wandb_log_eval_samples
             and self.step % self.settings.wandb_eval_samples_freq == 0
         ):
-            # Get evaluation samples from trainer state
             if hasattr(state, "eval_samples") and state.eval_samples:
                 for i, sample in enumerate(state.eval_samples):
                     wandb.log(
@@ -182,6 +200,23 @@ class WandbEvalCallback(TrainerCallback):
                             "step": self.step,
                         }
                     )
+
+        # Log memory usage
+        if self.settings.wandb_log_memory:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            wandb.log(
+                {
+                    "memory/rss": memory_info.rss / 1024**2,  # MB
+                    "memory/vms": memory_info.vms / 1024**2,  # MB
+                    "step": self.step,
+                }
+            )
+
+        # Log training time
+        if self.start_time:
+            elapsed_time = wandb.util.time.time() - self.start_time
+            wandb.log({"time/training_hours": elapsed_time / 3600, "step": self.step})
 
 
 def setup_trainer(
@@ -206,25 +241,30 @@ def setup_trainer(
                 "max_chapters": settings.max_chapters,
                 "reward_functions": settings.reward_functions,
                 "reward_weights": settings.reward_weights,
+                "learning_rate": settings.learning_rate,
+                "warmup_ratio": settings.warmup_ratio,
+                "weight_decay": settings.weight_decay,
+                "gradient_accumulation_steps": settings.gradient_accumulation_steps,
+                "per_device_train_batch_size": settings.per_device_train_batch_size,
             },
         )
+
     training_args = GRPOConfig(
         report_to="wandb" if settings.wandb_enabled else "none",
         output_dir="outputs",
         # Learning rate and optimization
-        learning_rate=5e-6,
+        learning_rate=settings.learning_rate,
         adam_beta1=0.9,
         adam_beta2=0.99,
-        weight_decay=0.1,
-        warmup_ratio=0.1,
+        weight_decay=settings.weight_decay,
+        warmup_ratio=settings.warmup_ratio,
         lr_scheduler_type="cosine",
         max_grad_norm=0.1,
         optim="adamw_8bit",
         # Memory optimizations
-        gradient_accumulation_steps=1,  # Accumulate gradients to simulate larger batch size
-        gradient_checkpointing=True,  # Trade computation for memory
-        per_device_train_batch_size=1,
-        # use_vllm=True,
+        gradient_accumulation_steps=settings.gradient_accumulation_steps,
+        gradient_checkpointing=settings.gradient_checkpointing,
+        per_device_train_batch_size=settings.per_device_train_batch_size,
         # Precision settings
         bf16=is_bfloat16_supported(),
         fp16=not is_bfloat16_supported(),
@@ -235,12 +275,19 @@ def setup_trainer(
         # Training duration
         num_train_epochs=settings.num_train_epochs if settings.max_steps is None else 1,
         max_steps=settings.max_steps,
+        # Evaluation settings
+        evaluation_strategy=settings.evaluation_strategy,
+        eval_steps=settings.eval_steps,
+        # Checkpointing
+        save_strategy=settings.save_strategy,
+        save_steps=settings.save_steps,
+        save_total_limit=settings.save_total_limit,
         # Length constraints
         max_prompt_length=settings.max_prompt_length,
         max_completion_length=settings.max_completion_length,
     )
 
-    # Create trainer with wandb callback
+    # Create trainer with callbacks
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
@@ -248,7 +295,7 @@ def setup_trainer(
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        callbacks=[WandbEvalCallback(settings)] if settings.wandb_enabled else None,
+        callbacks=[TrainingCallback(settings)] if settings.wandb_enabled else None,
     )
 
     return trainer
@@ -258,41 +305,162 @@ def setup_trainer(
 @click.option("--config", type=str, default=None, help="Path to config file")
 @click.option("--model-name", type=str, help="Model name/path")
 @click.option("--output-dir", type=str, default="outputs", help="Output directory")
-@click.option("--min-chapters", type=int, help="Minimum number of chapters")
-@click.option("--max-chapters", type=int, help="Maximum number of chapters")
-@click.option("--max-steps", type=int, help="Maximum number of training steps")
+# Dataset options
+@click.option("--dataset-id", type=str, help="Hugging Face dataset ID")
+@click.option(
+    "--dataset-use-local",
+    is_flag=True,
+    help="Use local dataset instead of Hugging Face",
+)
+@click.option("--dataset-local-path", type=str, help="Path to local dataset")
 @click.option(
     "--max-train-samples", type=int, help="Maximum number of training samples to use"
 )
+# Chapter settings
+@click.option("--min-chapters", type=int, help="Minimum number of chapters")
+@click.option("--max-chapters", type=int, help="Maximum number of chapters")
+# Training configuration
+@click.option("--max-steps", type=int, help="Maximum number of training steps")
+@click.option("--learning-rate", type=float, help="Learning rate")
+@click.option("--warmup-ratio", type=float, help="Warmup ratio")
+@click.option("--weight-decay", type=float, help="Weight decay")
+@click.option("--batch-size", type=int, help="Per device train batch size")
+@click.option(
+    "--gradient-accumulation-steps", type=int, help="Gradient accumulation steps"
+)
+# Model settings
+@click.option(
+    "--gpu-memory-utilization", type=float, help="GPU memory utilization (0.0-1.0)"
+)
+@click.option(
+    "--gradient-checkpointing", is_flag=True, help="Enable gradient checkpointing"
+)
+# Evaluation & Checkpointing
+@click.option(
+    "--evaluation-strategy",
+    type=click.Choice(["no", "steps", "epoch"]),
+    help="Evaluation strategy",
+)
+@click.option("--eval-steps", type=int, help="Number of steps between evaluations")
+@click.option(
+    "--save-strategy", type=click.Choice(["no", "steps", "epoch"]), help="Save strategy"
+)
+@click.option("--save-steps", type=int, help="Number of steps between saves")
+@click.option(
+    "--save-total-limit", type=int, help="Maximum number of checkpoints to keep"
+)
+# Weights & Biases settings
+@click.option("--wandb-project", type=str, help="Weights & Biases project name")
+@click.option("--wandb-entity", type=str, help="Weights & Biases entity/username")
+@click.option("--wandb-run-name", type=str, help="Weights & Biases run name")
+@click.option("--no-wandb", is_flag=True, help="Disable Weights & Biases logging")
 def train(
     config,
     model_name,
     output_dir,
+    dataset_id,
+    dataset_use_local,
+    dataset_local_path,
+    max_train_samples,
     min_chapters,
     max_chapters,
     max_steps,
-    max_train_samples,
+    learning_rate,
+    warmup_ratio,
+    weight_decay,
+    batch_size,
+    gradient_accumulation_steps,
+    gpu_memory_utilization,
+    gradient_checkpointing,
+    evaluation_strategy,
+    eval_steps,
+    save_strategy,
+    save_steps,
+    save_total_limit,
+    wandb_project,
+    wandb_entity,
+    wandb_run_name,
+    no_wandb,
 ):
     """Train model using GRPO with creative writing reward functions."""
     # Load settings
     settings = Settings()
+
+    # Override settings with command line arguments
     if model_name:
         settings.model_name = model_name
+    if dataset_id:
+        settings.dataset_id = dataset_id
+    if dataset_use_local:
+        settings.dataset_use_local = True
+    if dataset_local_path:
+        settings.dataset_local_path = dataset_local_path
+    if max_train_samples:
+        settings.max_train_samples = max_train_samples
     if min_chapters:
         settings.min_chapters = min_chapters
     if max_chapters:
         settings.max_chapters = max_chapters
     if max_steps:
         settings.max_steps = max_steps
-    if max_train_samples:
-        settings.max_train_samples = max_train_samples
+    if learning_rate:
+        settings.learning_rate = learning_rate
+    if warmup_ratio:
+        settings.warmup_ratio = warmup_ratio
+    if weight_decay:
+        settings.weight_decay = weight_decay
+    if batch_size:
+        settings.per_device_train_batch_size = batch_size
+    if gradient_accumulation_steps:
+        settings.gradient_accumulation_steps = gradient_accumulation_steps
+    if gpu_memory_utilization:
+        settings.gpu_memory_utilization = gpu_memory_utilization
+    if gradient_checkpointing:
+        settings.gradient_checkpointing = True
+    if evaluation_strategy:
+        settings.evaluation_strategy = evaluation_strategy
+    if eval_steps:
+        settings.eval_steps = eval_steps
+    if save_strategy:
+        settings.save_strategy = save_strategy
+    if save_steps:
+        settings.save_steps = save_steps
+    if save_total_limit:
+        settings.save_total_limit = save_total_limit
+    if wandb_project:
+        settings.wandb_project = wandb_project
+    if wandb_entity:
+        settings.wandb_entity = wandb_entity
+    if wandb_run_name:
+        settings.wandb_run_name = wandb_run_name
+    if no_wandb:
+        settings.wandb_enabled = False
 
     # Initialize DSPy LM for reward computation
     setup_dspy(settings)
 
-    # Load dataset and split into train/eval
-    full_dataset = load_from_disk("data/processed/writing_prompts")
-    split_dataset = full_dataset.train_test_split(test_size=0.1, seed=42)
+    # Load dataset
+    logger.info(
+        f"Loading dataset from {'local path' if settings.dataset_use_local else 'Hugging Face Hub'}"
+    )
+    if settings.dataset_use_local:
+        full_dataset = load_from_disk(settings.dataset_local_path)
+    else:
+        from datasets import load_dataset
+
+        full_dataset = load_dataset(settings.dataset_id)
+        if isinstance(full_dataset, dict):
+            # If dataset has splits, use the 'train' split
+            if "train" in full_dataset:
+                full_dataset = full_dataset["train"]
+            else:
+                # Use the first split if 'train' not found
+                full_dataset = full_dataset[list(full_dataset.keys())[0]]
+
+    # Split into train/eval
+    split_dataset = full_dataset.train_test_split(
+        test_size=settings.validation_split, seed=42
+    )
     train_dataset = prepare_dataset(split_dataset["train"], settings)
     eval_dataset = prepare_dataset(split_dataset["test"], settings)
 
@@ -304,8 +472,9 @@ def train(
     )
 
     try:
-        # Train
-        trainer.train()
+        # Resume from checkpoint if specified
+        checkpoint_dir = settings.resume_from_checkpoint
+        trainer.train(resume_from_checkpoint=checkpoint_dir)
 
         # Save
         if output_dir:
