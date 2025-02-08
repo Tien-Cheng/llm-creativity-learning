@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     gradient_checkpointing: bool = True
 
     # Dataset settings
+    dataset_id: str = "tiencheng/writing_prompts_exp_1"  # Hugging Face dataset ID
+    dataset_use_local: bool = False  # If True, load from local path instead of Hub
+    dataset_local_path: str = "data/processed/writing_prompts"  # Local dataset path if dataset_use_local is True
     validation_split: float = 0.1
     dataset_cache_dir: str | None = None
 
