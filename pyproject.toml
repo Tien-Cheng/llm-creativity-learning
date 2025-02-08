@@ -10,6 +10,7 @@ dependencies = [
     "datasets>=3.2.0",
     "diffusers>=0.32.2",
     "dspy>=2.6.2",
+    "flash-attn>=2.7.4.post1",
     "huggingface-hub>=0.28.1",
     "litellm[proxy]==1.57.4",
     "peft>=0.14.0",
