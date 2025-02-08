@@ -4,10 +4,8 @@ from typing import List, Callable
 
 import click
 import dspy
-import psutil
 import wandb
 from datasets import load_from_disk
-from transformers import TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
 
@@ -159,69 +157,7 @@ def setup_model(settings: Settings):
     return model, tokenizer
 
 
-class TrainingCallback(TrainerCallback):
-    """Custom callback for logging training metrics and samples."""
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self.step = 0
-        self.start_time = None
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        """Initialize training monitoring."""
-        self.start_time = wandb.util.time.time()
-        if self.settings.wandb_enabled:
-            if self.settings.wandb_watch != "false":
-                wandb.watch(
-                    kwargs["model"],
-                    log=self.settings.wandb_watch,
-                    log_freq=100,
-                )
-
-    def on_step_end(self, args, state, control, **kwargs):
-        """Log training metrics, samples, and resource usage."""
-        self.step += 1
-
-        if not self.settings.wandb_enabled:
-            return
-
-        # Log evaluation samples
-        if (
-            self.settings.wandb_log_eval_samples
-            and self.step % self.settings.wandb_eval_samples_freq == 0
-        ):
-            if hasattr(state, "eval_samples") and state.eval_samples:
-                for i, sample in enumerate(state.eval_samples):
-                    wandb.log(
-                        {
-                            f"eval_sample_{i}/prompt": sample["prompt"],
-                            f"eval_sample_{i}/completion": sample["completion"],
-                            f"eval_sample_{i}/rewards": sample["rewards"],
-                            "step": self.step,
-                        }
-                    )
-
-        # Log memory usage
-        if self.settings.wandb_log_memory:
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            wandb.log(
-                {
-                    "memory/rss": memory_info.rss / 1024**2,  # MB
-                    "memory/vms": memory_info.vms / 1024**2,  # MB
-                    "step": self.step,
-                }
-            )
-
-        # Log training time
-        if self.start_time:
-            elapsed_time = wandb.util.time.time() - self.start_time
-            wandb.log({"time/training_hours": elapsed_time / 3600, "step": self.step})
-
-
-def setup_trainer(
-    model, tokenizer, train_dataset, eval_dataset, reward_funcs, settings: Settings
-):
+def setup_trainer(model, tokenizer, train_dataset, reward_funcs, settings: Settings):
     """Set up GRPO trainer with settings and memory optimizations."""
     # Initialize wandb if enabled
     if settings.wandb_enabled:
@@ -272,12 +208,12 @@ def setup_trainer(
         fp16_full_eval=not is_bfloat16_supported(),
         # Generation settings
         num_generations=1,
+        # use_vllm=True,
         # Training duration
         num_train_epochs=settings.num_train_epochs if settings.max_steps is None else 1,
         max_steps=settings.max_steps,
         # Evaluation settings
-        evaluation_strategy=settings.evaluation_strategy,
-        eval_steps=settings.eval_steps,
+        evaluation_strategy="no",
         # Checkpointing
         save_strategy=settings.save_strategy,
         save_steps=settings.save_steps,
@@ -294,9 +230,9 @@ def setup_trainer(
         reward_funcs=reward_funcs,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        callbacks=[TrainingCallback(settings)] if settings.wandb_enabled else None,
     )
+    # trainer.add_callback(LogCompletionsCallback(trainer=trainer, num_prompts=5))
+    # trainer.add_callback(RichProgressCallback())
 
     return trainer
 
@@ -457,19 +393,13 @@ def train(
                 # Use the first split if 'train' not found
                 full_dataset = full_dataset[list(full_dataset.keys())[0]]
 
-    # Split into train/eval
-    split_dataset = full_dataset.train_test_split(
-        test_size=settings.validation_split, seed=42
-    )
-    train_dataset = prepare_dataset(split_dataset["train"], settings)
-    eval_dataset = prepare_dataset(split_dataset["test"], settings)
+    # Prepare training dataset
+    train_dataset = prepare_dataset(full_dataset, settings)
 
     # Initialize model and trainer
     model, tokenizer = setup_model(settings)
     reward_funcs = get_reward_functions(settings)
-    trainer = setup_trainer(
-        model, tokenizer, train_dataset, eval_dataset, reward_funcs, settings
-    )
+    trainer = setup_trainer(model, tokenizer, train_dataset, reward_funcs, settings)
 
     try:
         # Resume from checkpoint if specified

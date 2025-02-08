@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     dspy_api_base: str | None = None  # Provider's API base URL
 
     # Training model settings
-    model_name: str = "unsloth/Qwen2.5-7B-Instruct"
+    model_name: str = "unsloth/Llama-3.2-3B-Instruct-bnb-4bit"
     max_seq_length: int = 4096  # Reduced to prevent memory issues
     max_prompt_length: int = 512  # Keep original prompt length
     max_completion_length: int = 2048  # Reduced for better stability
