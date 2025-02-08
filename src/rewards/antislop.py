@@ -54,15 +54,17 @@ def split_into_chunks(slop_words: dict[str, float], num_chunks: int = 12):
     ]
 
 
-def calculate_slop_index(extracted_text, n_jobs: int = 12):
+def calculate_slop_index(
+    extracted_text, n_jobs: int = -1
+):  # -1 means use all available cores
     slop_words = load_and_preprocess_slop_words()
     slop_words_chunks = split_into_chunks(slop_words, n_jobs)
 
     if not extracted_text:
         slop_index = 0.0
     else:
-        # Parallelize the calculation using joblib
-        slop_scores = Parallel(n_jobs=n_jobs)(
+        # Parallelize the calculation using joblib with proper backend
+        slop_scores = Parallel(n_jobs=n_jobs, backend="threading")(
             delayed(calculate_slop_score_chunk)((extracted_text, chunk))
             for chunk in slop_words_chunks
         )
