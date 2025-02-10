@@ -29,6 +29,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+loggers = ["LiteLLM Proxy", "LiteLLM Router", "LiteLLM", "httpx"]
+
+for logger_name in loggers:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.CRITICAL + 1)
+
+
 # Patch GRPO before all functions
 PatchFastRL("GRPO", FastLanguageModel)
 
@@ -256,7 +263,9 @@ def setup_trainer(model, tokenizer, train_dataset, reward_funcs, settings: Setti
 @click.option("--min-chapters", type=int, help="Minimum number of chapters")
 @click.option("--max-chapters", type=int, help="Maximum number of chapters")
 # Training configuration
-@click.option("--max-steps", type=int, help="Maximum number of training steps")
+@click.option(
+    "--max-steps", type=int, help="Maximum number of training steps", default=-1
+)
 @click.option("--learning-rate", type=float, help="Learning rate")
 @click.option("--warmup-ratio", type=float, help="Warmup ratio")
 @click.option("--weight-decay", type=float, help="Weight decay")
